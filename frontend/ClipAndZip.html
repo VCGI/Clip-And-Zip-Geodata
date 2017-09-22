@@ -1,0 +1,345 @@
+<!-- Start of Header 
+******************************
+***
+***  
+***  Vermont Center for Geographic Information
+***
+***  
+******************************
+***
+***  Developer: Steve Sharp - VCGI
+***
+***  History:
+				Steve Sharp - VCGI,	12/19/2016	- BETA 1.0 release
+				Steve Sharp - VCGI, 12/29/2016	- Modified for use with new VT Geodata Portal
+***
+******************************
+-->
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <!--The viewport meta tag is used to improve the presentation and behavior of the samples 
+      on iOS devices-->
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1,user-scalable=no">
+    <title>Clip and Zip Tool - VT Open Geodata Portal</title>
+
+    <link rel="stylesheet" href="http://js.arcgis.com/3.9/js/dojo/dijit/themes/claro/claro.css">
+    <link rel="stylesheet" href="http://js.arcgis.com/3.9/js/esri/css/esri.css">
+    <style>
+      html, body { 
+        height: 100%; 
+        width: 100%; 
+        margin: 0; 
+        padding: 0;   
+        visibility: hidden;
+        font-family: sans-serif;
+      }
+      .claro .dijitBorderContainer-child {
+        border: none;
+      }
+      .claro .dijitBorderContainer-dijitContentPane, .claro .dijitContentPane {
+        padding: 0;
+      }
+      .claro .dijitTitlePaneContentInner {
+        line-height: 1.4em;
+      }
+      #controls {
+         position:absolute;
+         top:1em;right:1em;
+         width:auto !important;
+         height:auto !important;
+         z-index:10;
+      } 
+      #loading {
+        display: none;
+        vertical-align: middle;
+      }
+      .extentIcon { background-image:url(./images/clipandzip/i_draw_extent.PNG); width:20px; height:20px; }
+      .polyIcon { background-image:url(./images/clipandzip/i_draw_poly.png); width:20px; height:20px;}
+    </style>
+
+    <script src="http://js.arcgis.com/3.9/"></script>
+    <script>
+	  function getUrlVars() {
+		var vars = [], hash;
+		var hashes = window.location.href.slice(window.location.href.indexOf('?') + 1).split('&');
+		for(var i = 0; i < hashes.length; i++) {
+		  hash = hashes[i].split('=');
+		  vars.push(hash[0]);
+		  vars[hash[0]] = hash[1];
+		}
+	  return vars;
+	  }
+	  var hash = getUrlVars();
+	  // Name of the layer as defined in the Data2ExtractService map service
+	  var LayerName = decodeURIComponent(hash['InputLayerName']);
+	  // LayerExtent is used to reference a FC for those datasets which don't have statewide coverage.  It shows the extent of the coverage.
+	  var LayerExtent = LayerName + "_extent"
+	  // Maximum "visible" scale as defined in Data2ExtractService map service for this dataset/layer
+	  var MaxScale = decodeURIComponent(hash['InputMaxScale']);
+	  // Feature type (raster, imagery, other)
+	  var Ftype = decodeURIComponent(hash['InputFtype']);
+	  // Layer IDs as defined in map service
+	  LayerIDs = null
+
+      var gp, map;
+      var selectionToolbar;
+      require([
+	    "esri/SpatialReference",
+		"esri/geometry/Extent",
+        "esri/map", "esri/config", 
+        "esri/layers/ArcGISDynamicMapServiceLayer", "esri/layers/LayerInfo", "esri/layers/ImageParameters",
+        "esri/tasks/Geoprocessor", "esri/tasks/FeatureSet", "esri/toolbars/draw",
+        "esri/symbols/SimpleFillSymbol", "esri/symbols/SimpleLineSymbol",
+        "esri/graphic",
+        "esri/Color",
+        "dojo/dom", "dojo/dom-style", "dojo/query", "dojo/parser", 
+        "dijit/registry",
+        "dijit/layout/BorderContainer", "dijit/layout/ContentPane", 
+        "dijit/TitlePane", "dijit/form/CheckBox", "dijit/form/ComboBox", "dijit/form/TextBox",
+        "dojo/domReady!"
+      ], function(
+	    SpatialReference,
+		Extent,
+        Map, esriConfig,
+        ArcGISDynamicMapServiceLayer, LayerInfo, ImageParameters,
+        Geoprocessor, FeatureSet, Draw,
+        SimpleFillSymbol, SimpleLineSymbol,
+        Graphic,
+        Color,
+        dom, domStyle, query, parser,
+        registry
+      ) {
+        // Create all dijits.
+        parser.parse();
+
+        // Prevent flash of unstyled content(FOUC).
+        domStyle.set(query("body")[0], "visibility", "visible");
+        // Specify where the location of the proxy to use to communicate with the extract GP service.
+        esriConfig.defaults.io.proxyUrl = "/proxy";
+        // Keep a reference to the loading icon DOM node.
+        var loading = dom.byId("loading");
+
+		var mySpatialReference = new SpatialReference(32145);
+        var myExtent = new Extent(410000, 23000, 696000, 287000, mySpatialReference);
+        map = new Map("map", {
+		  extent: myExtent
+        });
+		map.on("load", initSelectionToolbar);
+        
+		var vtbasemap = new ArcGISDynamicMapServiceLayer("http://maps.vcgi.vermont.gov/arcgis/rest/services/VCGI_services/VCGI_BASEMAP_SP_v2/MapServer");
+			
+        var Data2ExtractService = new ArcGISDynamicMapServiceLayer("http://maps.vcgi.vermont.gov/arcgis/rest/services/VCGI_services/DWARE_ClipAndShipData_BETAv1/MapServer");
+		  //{"imageParameters": imageParameters});
+		map.addLayers([vtbasemap, Data2ExtractService]);
+		
+		map.on("layers-add-result", MakeInputLayerVisible);
+		
+        gp = new Geoprocessor("http://maps.vcgi.vermont.gov/arcgis/rest/services/VCGI_services/DWARE_ExtractDataOnlyv2/GPServer/ExtractDataOnly_v1");
+        gp.setOutSpatialReference({wkid:32145});
+
+        registry.byId("polygon").on("click", function() {
+          activateTool(this.id);
+        });
+        //registry.byId("extent").on("click", function() {
+          //activateTool(this.id);
+        //});
+        registry.byId("extract").on("click", extractData);
+		
+		
+		function MakeInputLayerVisible() {
+		  //alert("MakeInputLayerVisible routine has been triggered");
+		  the_layerInfos = Data2ExtractService.layerInfos;
+          i = 0;
+		  if ( the_layerInfos.length === 0 )
+		    {
+			alert("ERROR: LayerInfos.length is 0.  Please consult system administrator.");
+			return;
+			}
+          else
+		    {
+			while (i < the_layerInfos.length)
+				{
+				a_layerInfo = the_layerInfos[i];
+				if ( a_layerInfo.name == LayerName || a_layerInfo.name == LayerExtent)
+				  {
+				  if ( LayerIDs == null )
+				    {
+					LayerIDs = a_layerInfo.id;
+					}
+				  else
+				    {
+					LayerIDs = ( LayerIDs + "," + a_layerInfo.id );
+					}
+				  }
+				i += 1;
+				}
+			Data2ExtractService.setVisibleLayers([LayerIDs]);
+			Data2ExtractService.setOpacity(0.70);
+			}
+		}
+
+        function initSelectionToolbar() {
+          map.graphics.clear();
+          selectionToolbar = new Draw(map);
+          selectionToolbar.on("draw-end", function(e) {
+            selectionToolbar.deactivate();
+            var symbol = new SimpleFillSymbol(
+              "solid", 
+              new SimpleLineSymbol("dash", new Color([255,0,0]), 2), 
+              new Color([255,255,0,0.25])
+            );
+            var graphic = new Graphic(e.geometry, symbol);
+            map.graphics.add(graphic);
+          });
+        }
+
+        function activateTool(tool) {
+          map.graphics.clear();
+          // The draw.activate expects a string like "extent" or "polygon".
+          selectionToolbar.activate(tool);
+        }
+        
+        function extractData(){
+          //get clip layers
+          var clipLayers = [];
+          //if ( registry.byId("layer1").get("checked") ) { clipLayers.push(LayerName); }
+          if ( map.graphics.graphics.length === 0 ) {
+            alert("Draw an area of interest to clip.");
+            return;
+          }
+		  else clipLayers.push(LayerName);
+          var featureSet = new FeatureSet();
+          var features = [];
+          features.push(map.graphics.graphics[0]);
+          featureSet.features = features;
+
+          if ( Ftype === "raster" || Ftype === "imagery") {
+          	var params = {
+          		"Layers_to_Clip": clipLayers,
+          		"Area_of_Interest": featureSet,
+          		"Raster_Format": registry.byId("formatBox").get("value")
+             };
+          }
+          else {
+          	var params = {
+          		"Layers_to_Clip": clipLayers,
+          		"Area_of_Interest": featureSet,
+          		"Feature_Format": registry.byId("formatBox").get("value")
+             };
+          }
+          
+          domStyle.set(loading, "display", "inline-block");
+          gp.submitJob(params, completeCallback , statusCallback, function(error){
+            alert(error);
+            domStyle.set(loading, "display", "none");
+          });
+        }
+        function completeCallback(jobInfo){
+          if ( jobInfo.jobStatus !== "esriJobFailed" ) {
+            gp.getResultData(jobInfo.jobId, "output_zip", downloadFile);
+          }
+        }
+        function statusCallback(jobInfo) {
+          var status = jobInfo.jobStatus;
+          if ( status === "esriJobFailed" ) {
+            alert(status);
+            domStyle.set("loading", "display", "none");
+          }
+          else if (status === "esriJobSucceeded"){
+            domStyle.set("loading", "display", "none");
+          }
+        }
+        function downloadFile(outputFile){
+          map.graphics.clear();
+          var theurl = outputFile.value.url;  
+          window.location = theurl;
+        }
+      });
+    </script>
+  </head>
+  <body class="claro">
+    <div data-dojo-type="dijit/layout/BorderContainer" 
+         data-dojo-prps="gutters:false" 
+         style="width: 100%; height: 100%;margin:0;">
+
+      <div id="map" 
+           data-dojo-type="dijit/layout/ContentPane" 
+           data-dojo-props="region:'center'">
+           
+        <div data-dojo-type="dijit/TitlePane"  data-dojo-props="title:'<center><strong>VT Open Geodata Portal<br>Clip & Zip Tool</strong></center>'" id="controls">
+          <script>
+		  document.write(LayerName);
+		  </script>
+		  
+          <br><br>
+		  
+          <strong>1. Zoom In: </strong>
+          <font style="color:red"><strong>Dataset must be<br>
+		   visible before you can extract it!</strong><br></font>
+          <br><br>
+
+          <strong>2. Define Area to Clip</strong>
+          <br>
+          <!--<button id="extent"
+            data-dojo-type="dijit.form.Button" 
+            data-dojo-props="iconClass:'extentIcon', showLabel:false">
+              Extent Box
+          </button> -->
+          <button id="polygon"
+            data-dojo-type="dijit/form/Button" 
+            data-dojo-props="iconClass:'polyIcon', showLabel:false">
+              Polygon
+          </button>
+          <br><br>
+
+          <strong>3. Specify download format</strong>
+          <br>
+          <script>
+		  if ( Ftype === "imagery" ) {
+		  	document.write("<select data-dojo-type='dijit/form/ComboBox' id='formatBox'>");
+		  	document.write("<option>Joint Photographics Experts Group - JPEG 2000 - .jp2</option>");
+		  	document.write("<option>ERDAS IMAGINE - IMG - .img</option>");
+		  	document.write("<option>Tagged Image File Format - TIFF - .tif</option>");
+		  	document.write("<option>File Geodatabase - GDB - .gdb</option>");
+		  	document.write("</select>");
+		  }
+		  else if ( Ftype === "raster" ) {
+		  	document.write("<select data-dojo-type='dijit/form/ComboBox' id='formatBox'>");
+		  	document.write("<option>Joint Photographics Experts Group - JPEG 2000 - .jp2</option>");
+		  	document.write("<option>ERDAS IMAGINE - IMG - .img</option>");
+		  	document.write("<option>Tagged Image File Format - TIFF - .tif</option>");
+		  	document.write("<option>File Geodatabase - GDB - .gdb</option>");
+		  	document.write("</select>");
+		  }
+		  else {
+		  	document.write("<select data-dojo-type='dijit/form/ComboBox' id='formatBox'>");
+		  	document.write("<option>Shapefile - SHP - .shp</option>");
+		  	document.write("<option>File Geodatabase - GDB - .gdb</option>");
+		  	document.write("</select>");
+		  }
+		  </script>
+          <br><br>
+		  
+          <!--4.Specify Projection
+          <br>
+          <select data-dojo-type="dijit/form/ComboBox" id="PrjBox">
+		  <option>NAD 1983 StatePlane Vermont FIPS 4400 (Meters)</option>
+		  <option>WGS 1984 Web Mercator (auxiliary sphere)</option>
+		  <option>WGS 1984</option>
+		  </select>
+          <br><br>-->
+		  
+          <button id="extract" data-dojo-type="dijit/form/Button">Extract Data</button>
+          <img id="loading" src="images/clipandzip/loading.gif">
+          <br><br>
+          <a href="mailto:accd.vcgiinfo@vermont.gov?Subject=VCGI%20Custom%20Download%20Feedback" target="_top">Problem? Contact Us</a>
+        </div>  
+      </div>
+   
+     </div>
+  </body>
+
+</html>
